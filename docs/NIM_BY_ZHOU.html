@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NIM by Zhou</title>
+  <style>
+    :root{ --bg:#0b0e14; --panel:#121724; --text:#e9edf4; --muted:#9aa5b3; --accent:#5dd0ff; --danger:#ff6b6b; }
+    *{box-sizing:border-box}
+    body{margin:0; font-family:system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--text)}
+    .wrap{max-width:920px; margin:24px auto; padding:0 16px}
+    .card{background:linear-gradient(180deg,#141a2a,#0f1423); border:1px solid rgba(255,255,255,.08); border-radius:14px; box-shadow:0 8px 20px rgba(0,0,0,.35)}
+    header{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px}
+    h1{margin:0; font-size:24px}
+    .sub{color:var(--muted); font-size:13px; max-width:640px}
+    .right{display:flex; gap:8px; align-items:center}
+
+    .board{padding:14px}
+    .status{padding:8px 12px; background:#0b1221; border:1px solid rgba(255,255,255,.08); border-radius:10px; font-size:14px}
+    .rows{margin-top:12px; display:grid; gap:10px}
+    .row{display:flex; align-items:center; gap:12px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.02)}
+    .row h3{margin:0; width:72px; font-size:14px; color:var(--muted)}
+    .matches{display:flex; flex-wrap:wrap; gap:8px; min-height:56px}
+    .match{width:12px; height:44px; border-radius:5px; background:linear-gradient(180deg,#ffd25d,#ff9b2f); position:relative; box-shadow:inset 0 -2px 0 rgba(0,0,0,.15), 0 3px 8px rgba(0,0,0,.25)}
+    .match:before{content:""; position:absolute; top:-9px; left:50%; transform:translateX(-50%); width:14px; height:14px; border-radius:50%; background:radial-gradient(circle at 30% 30%, #fff5b1 0%, #ffd25d 40%, rgba(0,0,0,.25) 85%)}
+    .controls{margin-left:auto; display:flex; align-items:center; gap:8px}
+    button{padding:8px 10px; border-radius:10px; background:#0e1526; color:var(--text); border:1px solid rgba(255,255,255,.1); cursor:pointer; font-size:14px}
+    button.primary{border-color:rgba(93,208,255,.5)}
+    button:disabled{opacity:.6; cursor:not-allowed}
+    .footer{display:flex; justify-content:flex-end; align-items:center; margin-top:12px; gap:8px}
+    .winner{color:#86ffb6}
+    .loser{color:var(--danger)}
+    .hint{color:var(--muted); font-size:13px}
+    .pill{padding:6px 10px; border-radius:999px; background:#0b1221; border:1px solid rgba(255,255,255,.08); font-size:12px}
+    .toggle{display:flex; gap:8px}
+    .toggle button{min-width:110px}
+    .active{outline:3px solid rgba(93,208,255,.35)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>NIM by Zhou</h1>
+        <div class="sub">RULES: Two players take turns removing objects from distinct piles. On each turn, a player must remove at least one object, and may remove any number of objects provided they all come from the same pile. The goal of the game is to avoid taking the last object !!!</div>
+      </div>
+      <div class="right">
+        <div class="toggle" role="group" aria-label="Who moves first">
+          <button id="btnYouFirst" class="pill">You first</button>
+          <button id="btnPcFirst" class="pill">Computer first</button>
+        </div>
+        <button id="btnNew" class="primary">New Game</button>
+      </div>
+    </header>
+
+    <section class="card board" aria-live="polite">
+      <div class="status" id="status">Your turn: click a Row’s REMOVE button as many times as you like, then press “Computer move”. Remove from ONE row only.</div>
+      <div class="rows" id="rows"></div>
+      <div class="footer">
+        <button id="btnUndoTurn" title="Undo removals this turn">Undo this turn</button>
+        <button id="btnPC" class="primary">Computer move</button>
+      </div>
+    </section>
+  </div>
+
+  <template id="rowTmpl">
+    <div class="row" data-row>
+      <h3>Row 1</h3>
+      <div class="matches"></div>
+      <div class="controls">
+        <span class="hint" data-left>0 left</span>
+        <button class="remove" type="button">REMOVE</button>
+      </div>
+    </div>
+  </template>
+
+  <script>
+  (function(){
+    const els = {
+      rows: document.getElementById('rows'),
+      status: document.getElementById('status'),
+      btnPC: document.getElementById('btnPC'),
+      btnNew: document.getElementById('btnNew'),
+      btnUndoTurn: document.getElementById('btnUndoTurn'),
+      btnYouFirst: document.getElementById('btnYouFirst'),
+      btnPcFirst: document.getElementById('btnPcFirst'),
+    };
+
+    const state = {
+      pilesStart: [1,3,5,7],
+      piles: [1,3,5,7],
+      turn: 'human', // 'human' | 'ai'
+      first: 'human',
+      lockRow: null, // which row the human has chosen this turn
+      removedThisTurn: 0,
+      savedBeforeTurn: null,
+      over: false,
+      aiOpening: false, // if AI starts, first move is random
+      statusOverride: null,
+    };
+
+    // Utils
+    const deep = o => JSON.parse(JSON.stringify(o));
+    const sum = a => a.reduce((x,y)=>x+y,0);
+    const nimSum = a => a.reduce((x,y)=> x ^ y, 0);
+    const bigHeaps = a => a.filter(v=>v>1).length;
+    const s = n => n===1 ? 'stick' : 'sticks';
+
+    function render(){
+      els.btnYouFirst.classList.toggle('active', state.first==='human');
+      els.btnPcFirst.classList.toggle('active', state.first==='ai');
+
+      els.rows.innerHTML = '';
+      state.piles.forEach((cnt, idx)=>{
+        const node = document.getElementById('rowTmpl').content.firstElementChild.cloneNode(true);
+        node.querySelector('h3').textContent = `Row ${idx+1}`;
+        const mat = node.querySelector('.matches');
+        for(let i=0;i<cnt;i++){ const d=document.createElement('div'); d.className='match'; mat.appendChild(d); }
+        node.querySelector('[data-left]').textContent = `${cnt} left`;
+        const btn = node.querySelector('.remove');
+        btn.disabled = (state.turn!== 'human') || state.over || cnt===0 || (state.lockRow!==null && state.lockRow!==idx);
+        // Attach row index for delegation fallback
+        btn.dataset.rowIndex = String(idx);
+        els.rows.appendChild(node);
+      });
+      updateStatus();
+      els.btnPC.disabled = !(state.turn==='human' && state.removedThisTurn>0) || state.over;
+      els.btnUndoTurn.disabled = !(state.turn==='human' && state.removedThisTurn>0) || state.over;
+    }
+
+    function updateStatus(){
+      if(state.over){ return; }
+      if(state.statusOverride){ els.status.textContent = state.statusOverride; return; }
+      if(state.turn==='human'){
+        if(state.removedThisTurn>0 && state.lockRow!==null){
+          els.status.textContent = `Your turn: remove ${state.removedThisTurn} ${s(state.removedThisTurn)} from Row ${state.lockRow+1}. Then press Computer move.`;
+        } else {
+          const lock = state.lockRow===null? 'any one row' : `Row ${state.lockRow+1}`;
+          els.status.innerHTML = `Your turn: remove from <strong>${lock}</strong>. Then press <em>Computer move</em>.`;
+        }
+      } else {
+        els.status.textContent = state.aiOpening ? 'Computer starts with a random move…' : 'Computer is thinking…';
+      }
+    }
+
+    // — Human actions —
+    function removeOne(idx){
+      if(state.turn!=='human' || state.over) return;
+      if(state.lockRow!==null && state.lockRow!==idx) return; // enforce one-row rule
+      if(state.removedThisTurn===0){ state.savedBeforeTurn = deep(state.piles); state.lockRow = idx; state.statusOverride = null; }
+      if(state.piles[idx]===0) return;
+      state.piles[idx] -= 1;
+      state.removedThisTurn += 1;
+      // If you take the last object, you lose → computer wins
+      if(sum(state.piles)===0){ gameOver('ai'); return; }
+      render();
+    }
+
+    // Event delegation for REMOVE buttons (robust to re-renders)
+    els.rows.addEventListener('click', (e)=>{
+      const btn = e.target.closest && e.target.closest('.remove');
+      if(!btn) return;
+      const rowEl = btn.closest('[data-row]');
+      const children = Array.from(els.rows.children);
+      const idx = children.indexOf(rowEl);
+      if(idx>=0) removeOne(idx);
+    });
+
+    function undoTurn(){
+      if(state.savedBeforeTurn){ state.piles = deep(state.savedBeforeTurn); }
+      state.lockRow = null; state.removedThisTurn = 0; state.savedBeforeTurn = null; render();
+    }
+
+    // — Computer move —
+    function randomMove(piles){
+      const idxs = piles.map((v,i)=> v>0 ? i : -1).filter(i=> i!==-1);
+      const i = idxs[Math.floor(Math.random()*idxs.length)];
+      const qty = 1 + Math.floor(Math.random()*piles[i]);
+      return [i, qty];
+    }
+
+    function bestMisereMove(piles){
+      // Misère Nim strategy
+      const ones = piles.filter(v=>v===1).length;
+      const big = bigHeaps(piles);
+      if(big===0){
+        const i = piles.findIndex(v=>v>0);
+        return [i, 1];
+      }
+      if(big===1){
+        const i = piles.findIndex(v=>v>1);
+        const target = (ones % 2 === 0) ? 1 : 0;
+        const qty = piles[i] - target;
+        return [i, qty];
+      }
+      // normal Nim to 0 nim-sum
+      const x = nimSum(piles);
+      if(x===0){
+        const i = piles.indexOf(Math.max(...piles));
+        return [i, 1];
+      }
+      for(let k=0;k<piles.length;k++){
+        const target = piles[k] ^ x; if(target < piles[k]){ return [k, piles[k]-target]; }
+      }
+      const i = piles.indexOf(Math.max(...piles));
+      return [i, 1];
+    }
+
+    function pcMove(){
+      if(state.over) return;
+      // Case A: AI starts; Case B: AI replies after human
+      if(state.turn==='human' && state.removedThisTurn===0){ return; }
+      state.turn = 'ai';
+      updateStatus();
+      setTimeout(()=>{
+        let i, qty;
+        if(state.aiOpening){
+          [i, qty] = randomMove(state.piles); // random opening every time AI starts
+          state.aiOpening = false;
+        } else {
+          [i, qty] = bestMisereMove(state.piles);
+        }
+        state.piles[i] -= qty;
+        // If computer takes the last object, computer loses → you win
+        if(sum(state.piles)===0){ gameOver('human'); return; }
+        state.turn = 'human'; state.lockRow = null; state.removedThisTurn = 0; state.savedBeforeTurn = null;
+        state.statusOverride = `The computer has removed ${qty} ${s(qty)} from Row ${i+1}. Now it is your turn.`;
+        render();
+      }, 220);
+    }
+
+    function gameOver(who){
+      state.over = true; state.turn = null;
+      if(who==='human'){
+        els.status.innerHTML = '<strong class="winner">You win! 🎉</strong>';
+      } else {
+        els.status.innerHTML = '<strong class="loser">The computer wins.</strong>';
+      }
+    }
+
+    function newGame(){
+      state.piles = deep(state.pilesStart);
+      state.turn = state.first; state.over=false; state.lockRow=null; state.removedThisTurn=0; state.savedBeforeTurn=null;
+      state.aiOpening = (state.first==='ai');
+      state.statusOverride = null;
+      els.status.textContent = (state.turn==='human')
+        ? 'Your turn: click a Row’s REMOVE button as many times as you like, then press “Computer move”. Remove from ONE row only.'
+        : 'Computer will start with a random move…';
+      render();
+      if(state.first==='ai') setTimeout(pcMove, 350);
+    }
+
+    // Header controls
+    els.btnPC.addEventListener('click', pcMove);
+    els.btnNew.addEventListener('click', newGame);
+    els.btnUndoTurn.addEventListener('click', undoTurn);
+    els.btnYouFirst.addEventListener('click', ()=>{ state.first='human'; newGame(); });
+    els.btnPcFirst.addEventListener('click', ()=>{ state.first='ai'; newGame(); });
+
+    // Init
+    newGame();
+  })();
+  </script>
+</body>
+</html>
